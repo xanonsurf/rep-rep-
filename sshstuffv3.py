@@ -8,13 +8,6 @@ import sys
 import os
 import base64
 import ssl  # Added missing import
-import dns.resolver
-import dns.name
-import dns.query
-import dns.message
-from cryptography.hazmat.primitives import hashes
-from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
-from cryptography.hazmat.backends import default_backend
 
 # Command-line arguments
 if len(sys.argv) not in (5, 6):
